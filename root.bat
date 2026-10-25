@@ -84,8 +84,11 @@ rem as its octal escape and $GFSO stays literal until the fire reads it.
 "%ADB%" shell "rm -f %DT%/log_*.txt" >nul 2>&1
 
 rem Detach ON THE DEVICE: if this window closes the fire must still live, because
-rem tearing the fire down is what panics the watch.
-start /b "" "%ADB%" shell "GFSO=%DT%/!GSN! GHOSTLOCK_WS_TARGET=st GHOSTLOCK_STAT_UWALK=1 GHOSTLOCK_ATTEMPTS=44 GHOSTLOCK_WBASE=4 GHOSTLOCK_WALKSAFE=1 GHOSTLOCK_STAY=1 sh %DT%/fire3.sh" >nul 2>&1
+rem tearing the fire's process group down is what panics the watch.
+rem `<nul` is NOT cosmetic: `start /b` shares THIS console, and an adb.exe that is
+rem still attached to stdin steals the user's keystrokes -- that is why the
+rem interactive shell looked hung after `id` (the line never reached rootsh.py).
+start /b "" "%ADB%" shell "GFSO=%DT%/!GSN! GHOSTLOCK_WS_TARGET=st GHOSTLOCK_STAT_UWALK=1 GHOSTLOCK_ATTEMPTS=44 GHOSTLOCK_WBASE=4 GHOSTLOCK_WALKSAFE=1 GHOSTLOCK_STAY=1 sh %DT%/fire3.sh" <nul >nul 2>&1
 
 set /a W=0
 :waitroot

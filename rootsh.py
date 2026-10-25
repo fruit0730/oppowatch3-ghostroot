@@ -32,6 +32,7 @@ def session(cmds):
     buf = []
     closed = threading.Event()
     got = threading.Event()
+    traffic = threading.Event()
 
     def pump():
         while True:
@@ -48,6 +49,7 @@ def session(cmds):
             if not d:
                 break
             got.set()
+            traffic.set()
             sys.stdout.write(d.decode(errors="replace"))
             sys.stdout.flush()
             buf.append(d)
@@ -69,11 +71,19 @@ def session(cmds):
         s.close()
         return 0
     print("--- interactive root shell (Ctrl-C to leave; the daemon stays up) ---")
+    print('[*] every line you type is echoed as "[>] ..." once it has actually'
+          " left this process, so a missing reply is unambiguous")
     try:
         while not closed.is_set():
             line = input()
+            traffic.clear()
             s.sendall((line + "\n").encode())
-            time.sleep(0.35)
+            sys.stdout.write("[>] %s\n" % line)
+            sys.stdout.flush()
+            if not traffic.wait(10.0) and not closed.is_set():
+                print("[!] nothing back for 10s after %r - either that command is"
+                      " just quiet, or the daemon died with the watch."
+                      " Check: python rootcmd.py 20 \"id\"" % line)
     except (KeyboardInterrupt, EOFError):
         pass
     if closed.is_set():
