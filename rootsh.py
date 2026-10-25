@@ -37,7 +37,13 @@ def session(cmds):
         while True:
             try:
                 d = s.recv(65536)
-            except Exception:
+            except socket.timeout:
+                # An idle shell sends nothing, and a rooted prompt sitting quiet
+                # for more than settimeout() is the NORMAL case -- treating this
+                # as EOF killed every interactive session after 4 seconds while
+                # the watch stayed perfectly rooted.
+                continue
+            except OSError:
                 break
             if not d:
                 break
@@ -71,8 +77,7 @@ def session(cmds):
     except (KeyboardInterrupt, EOFError):
         pass
     if closed.is_set():
-        print("[*] the root shell closed the connection (watch rebooted, or the"
-              " fire's process group was torn down)")
+        print("[*] root shell closed (you typed exit, or the watch rebooted)")
     s.close()
     return 0
 
