@@ -22,9 +22,11 @@
 1. **只用于你自己拥有的设备。** 解锁 bootloader 在 OWW212 上是**不可恢复的变砖**
    （fastboot 无法刷回，只能返厂）。本工具**完全不碰 bootloader**，`/proc/cmdline`
    里的 `androidboot.vbmeta.device_state=locked` 全程保持 `locked`。
-2. **内核 panic 是常态，不是损坏。** 每一次"打孔"都要重走一遍 PI 链，残留的 ghost
-   waiter 可能被任何任务踩到。实测**约 1/3 的尝试会 panic 重启**（约 90 秒后自动
-   恢复，不丢数据）。崩溃签名：
+2. **内核 panic / 走链挂死是常态，不是损坏。** 每一次"打孔"都要重走一遍 PI 链，残留的
+   ghost waiter 可能被任何任务踩到；实测**失败是按孔数逐个掷骰子**（一枪需要 13 个孔），
+   所以 `root.bat` 会跨开机自动重试（最多 6 次；今天实测在第 5 次成功）。panic 约 90 秒后
+   自动恢复，不丢数据；如果只是挂死（adb 连着但 shell 不响应），长按侧键约 15 秒强制重启
+   即可。崩溃签名通常是：
    `Unable to handle kernel NULL pointer dereference at virtual address 00000000`，
    `PC is at _raw_spin_trylock+0x20`，`LR is at rt_mutex_adjust_prio_chain+0x120`。
 3. **拿到 root 之后：不要拔充电器、不要 kill/restart adbd。** 这两种动作都会拆除
@@ -144,11 +146,20 @@ stage 7   写 0 到 task+0x618              -> 复位被 S2 顺带破坏的 last
 stage 2   读 cred 本体                    -> 校验 uid==2000 && gid==2000 是"我们的"cred
 stage 3   写 0 到 selinux_state           -> permissive
 stage 4   写 0 到 cred+{04,08,0c,10,14,18,1c,20}   -> uid/gid/suid/sgid/euid/egid/fsuid/fsgid
-stage 5   盖章 cred+{30..47}              -> capability（值取一个可写地址）
-stage 6   getuid()==0 ? 否则重发（每步都幂等）
-stage 8   把 uts_ns 槽写回 init_uts_ns    -> 恢复全系统 uname()
+stage 5   (默认跳过) 盖章 cred+{30..47} capability
+stage 6/8 getuid()==0 ? 否则重发（每步都幂等）；然后把 uts_ns 槽写回 init_uts_ns
 finish    fork 出 detached root shell，监听 127.0.0.1:25555
 ```
+
+**capability 盖章默认不做**（`GHOSTLOCK_STAT_NOCAPS=0` 可打开）：盖章值必须是"4 字节
+对齐且可写的内核地址"，所以它永远带不上 `CHOWN`/`DAC_OVERRIDE`，而实际使用的那个值连
+`SYS_ADMIN`/`NET_ADMIN` 都没有——花 6 次走链换不到任何东西。真正的检查是 `getuid()`，
+它不消耗打孔。因此整条链是 **13 个孔**：head + task + repair + cred + permissive +
+8×id + restore-uts。
+
+**守护监听在 uid 变成 0 的那一刻就先起来**（在 restore-uts 之前）。因为剩下的失败模式
+是"某个孔卡在 PI 走链里"（实测：13:08 那枪卡在第 22 个孔、此时 uid 已经是 0；13:15 那
+枪卡在第 6 个孔），先起监听意味着即使随后挂死，你手上仍然有一个可用的 root shell。
 
 程序**不退出**（`GHOSTLOCK_STAY=1`）：实测 fire 进程退出时的 futex/PI 清理正是
 panic 的高发点。
@@ -245,7 +256,7 @@ docs/                       完整中文技术报告（原理 / 代码 / 日志 
 | --- | --- | --- |
 | `root.bat --attach` 说没有守护 | **`--attach` 本来不开火**；本次开机没 root（或表已重启） | 直接跑 `root.bat` |
 | 日志停在 `no-KASLR target`，连 `UW start` 都没有 | 在开机第 0 分钟开火，只剩 5–11 MB 空闲，**lowmemorykiller 杀了 fire** | 已修：等过第 1 分钟再静置 |
-| 第一个孔就 panic、表 90 秒后重启 | 开火时 1 分钟负载 ≥10（实测成功全在 ≤9.4，失败全在 ≥10.3） | 已修：负载闸门 |
+| 第一个孔就崩 / 走到第 N 个孔卡住不动 | 每个孔都要重走 PI 链，**挂死与崩溃都是按孔数逐个掷骰子**（实测有卡在第 6 孔、也有卡在第 22 孔的）。低负载（<9）有助于提高命中率但不是决定因素 | 换下次开机重试；`root.bat` 会自己重试 6 次 |
 | 猎杀反复"not ours" | 尾部被 LMK 重启的应用/kworker 占了 | 已修：沿 `tasks.prev` 回走 + 诱饵线程 |
 | 明明找到 cred 却判定失败、白烧十几个孔 | **存储偶尔不落地**，`uname()` 读到的是上一格的旧窗口 | 已修：窗口逐字节相同即判 stale，只重发同一步 |
 | `SKIP single-flight` | 上一个 fire（`STAY=1` 不退出）还占着 `/data/local/tmp/ghostlock.lock` | **别 kill 它**，重启表即可 |
