@@ -30,9 +30,14 @@ rem      settles with 16-35 MB free, load 4-41. It needs ~100 s of idling or the
 rem      hunt loses the race.
 rem ===========================================================================
 setlocal enabledelayedexpansion
+rem Self-locating: the repo works wherever you clone it. adb is taken from
+rem C:\platform-tools first, then from PATH -- ignoring the 0-byte `adb` shim
+rem that Git for Windows puts in front of the real adb.exe.
+set DIR=%~dp0
 set ADB=C:\platform-tools\adb.exe
-set DIR=C:\Users\RLG\Documents\oppowatch2-root\GhostLock-OWW212
-set SO=%DIR%\exploit\preload.so
+if not exist "%ADB%" for /f "delims=" %%I in ('where adb.exe 2^>nul') do call :tryadb "%%~fI" %%~zI
+if defined ADBFOUND set ADB=%ADBFOUND%
+set SO=%DIR%exploit\preload.so
 set DT=/data/local/tmp
 set LOCK=%DT%/ghostlock.lock
 set PORT=25555
@@ -55,7 +60,7 @@ echo %ARGS%|"%FIND%" "--check" >nul && (
   echo [*] python:
   %PY% --version
   echo [*] exploit artifact:
-  dir "%SO%" | find "preload.so"
+  dir "%SO%" | "%FIND%" "preload.so"
   echo [*] everything above looks usable - now run:  root.bat
   exit /b 0
 )
@@ -88,7 +93,7 @@ ping -n 4 127.0.0.1 >nul
 set /a W+=1
 rem One adb call per poll (two is slower and each `adb shell` spawns a toybox
 rem that competes with the hunt for the tail of the task list).
-"%ADB%" shell "cat %DT%/log_*.txt 2>/dev/null" >"%GL%" 2>nul
+"%ADB%" shell "cat `ls -t %DT%/log_*.txt 2>/dev/null | head -1` 2>/dev/null" >"%GL%" 2>nul
 "%FIND%" "UW-SHELL listening" "%GL%" >nul && goto rooted
 "%FIND%" "SKIP single-flight" "%GL%" >nul && goto blocked
 rem the fire prints root=NO when it runs out of attempts without rooting
@@ -175,6 +180,16 @@ ping -n 11 127.0.0.1 >nul
 goto waitload
 :loadok
 "%ADB%" shell "uptime; getenforce" 2>nul
+exit /b 0
+
+rem --------------------------------------------------------------------------
+rem  :tryadb <path> <size> - accept a PATH-resolved adb only if it is a real
+rem  binary (the Git-for-Windows `adb` shim is 0 bytes and breaks every call).
+rem --------------------------------------------------------------------------
+:tryadb
+if %2 LSS 100000 exit /b 0
+if defined ADBFOUND exit /b 0
+set ADBFOUND=%~1
 exit /b 0
 
 rem --------------------------------------------------------------------------

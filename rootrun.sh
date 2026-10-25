@@ -42,7 +42,10 @@ echo "[rootrun] firing ($GS) ..."
 root=0
 for i in $(seq 1 20); do
   sleep 5
-  if $ADB shell "cat $DT/log_*.txt 2>/dev/null" 2>/dev/null | tr -d '\r' | grep -q 'UW-SHELL listening'; then
+  # Newest log file ONLY: a panic can poison a log's dentry so `rm -f` cannot
+  # delete it, and a stale "SKIP single-flight" line in it then makes a later run
+  # misread a perfectly healthy fire as blocked (root.bat attempt 1, 17:14).
+  if $ADB shell "cat \$(ls -t $DT/log_*.txt 2>/dev/null | head -1) 2>/dev/null" 2>/dev/null | tr -d '\r' | grep -q 'UW-SHELL listening'; then
     root=1; echo "[rootrun] ROOT after $((i * 5))s"; break
   fi
 done

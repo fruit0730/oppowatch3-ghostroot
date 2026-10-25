@@ -5,13 +5,15 @@ Run after rootnow.sh has fired:  python rootsh.py ["cmd1" "cmd2" ...]
 With no arguments it gives an interactive root shell; with arguments it runs
 them non-interactively and prints the output.
 """
-import socket, subprocess, sys, threading, time
+import os, socket, subprocess, sys, threading, time
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")
 
 PORT = 25555
-ADB = r"C:\platform-tools\adb.exe"
+ADB = os.environ.get("ADB", r"C:\platform-tools\adb.exe")
+if not os.path.exists(ADB):
+    ADB = "adb"  # fall back to whatever is on PATH
 
 
 def forward():
