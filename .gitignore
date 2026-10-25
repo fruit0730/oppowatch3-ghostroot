@@ -1,0 +1,39 @@
+# --- huge / third-party artifacts that must never be committed -------------
+linux-5.4/
+linux-5.4.tar.xz
+extracted/
+HeyOTA.apk
+*.img
+*.zip
+
+# --- device data: serials, account names, logcat, pstore, partition dumps ---
+bugreport.zip
+bugreport_extracted/
+captures/
+device_config.gz
+device_config.txt
+
+# --- build output (keep the shipped exploit/preload.so, drop the objects) ---
+exploit/build/
+*.o
+*.d
+
+# --- offline analysis scratch: binaries and a KNOWN-BROKEN kallsyms dump -----
+# sysmap_a142.txt has mispaired names/addresses; regenerate it, do not trust it.
+exploit/tools/test/
+exploit/tools/pfnprobe
+exploit/tools/sysmap_a142.txt
+exploit/tools/__pycache__/
+__pycache__/
+*.pyc
+
+# --- local state / backups --------------------------------------------------
+.sonum
+*.bak
+*.tmp
+.DS_Store
+linux-5.4-src/
+ota_capture.flow
+fire_results.txt
+plan.txt
+bugreport*/
