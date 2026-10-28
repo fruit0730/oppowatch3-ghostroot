@@ -42,7 +42,7 @@ set DT=/data/local/tmp
 set LOCK=%DT%/ghostlock.lock
 set PORT=25555
 set PY=python
-set RETRIES=6
+set RETRIES=14
 set SETTLE=100
 set GL=%TEMP%\ghostlock-last-log.txt
 set FIND=%SystemRoot%\System32\find.exe
@@ -100,7 +100,7 @@ set /a W+=1
 rem One adb call per poll (two is slower and each `adb shell` spawns a toybox
 rem that competes with the hunt for the tail of the task list).
 "%ADB%" shell "cat `ls -t %DT%/log_*.txt 2>/dev/null | head -1` 2>/dev/null" >"%GL%" 2>nul
-"%FIND%" "UW-SHELL listening" "%GL%" >nul && goto rooted
+"%FIND%" "UW-SHELL listening" "%GL%" >nul && goto checksafe
 "%FIND%" "SKIP single-flight" "%GL%" >nul && goto blocked
 rem the fire prints root=NO when it runs out of attempts without rooting
 "%FIND%" "root=NO" "%GL%" >nul && goto retry
@@ -109,6 +109,27 @@ if !W! equ 15 (
 )
 if %W% lss 70 goto waitroot
 echo [*] no verdict after !W! polls - the walk stalled (a panic usually follows)
+goto retry
+
+:checksafe
+rem Landing root is not enough: if the permissive punch had to write 0 (our
+rem recycled stack page was not 64KB aligned) it also cleared
+rem selinux_state.initialized, SID->context dies, init can no longer set ANY
+rem property, and the next USB re-enumeration tears adbd down on top of the PI
+rem state we left behind -- which is the "goes laggy, then dead" the user sees
+rem while touching the screen. `id -Z` is the functional test for exactly that:
+rem resolving a context calls security_sid_to_context(), so a broken one prints
+rem `?` instead of `u:r:...` (the same damage that shows up as `context=?` in
+rem every id output). A setprop probe is useless here -- an undefined property
+rem name is rejected by init no matter how healthy SELinux is. A session that
+rem fails is rebooted via sysrq (`adb reboot` is itself a property set) and the
+rem attempt is retried.
+"%PY%" rootcmd.py 25 "echo CTX=[$(id -Z)]" >"%GL%" 2>nul
+"%FIND%" "CTX=[u:r:" "%GL%" >nul && goto rooted
+echo [!] root landed but SID->context is dead (id -Z prints ?) - this session WILL
+echo     freeze once you use the touchscreen. Rebooting and firing again
+echo     (a safe fire needs the recycled stack page to land 64KB aligned).
+"%PY%" rootcmd.py 25 "sync; sync; echo b > /proc/sysrq-trigger" >nul 2>&1
 goto retry
 
 :blocked

