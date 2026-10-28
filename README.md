@@ -200,6 +200,14 @@ cred 内 uid..fsgid    +0x04..+0x20 ；capability 字 +0x30..+0x47
 - **capability 不跨 execve**：守护进程 exec 出来的 `sh` 显示 `CapEff: 0`（普通非
   setuid 文件的 execve 会把 permitted 清零）。要特权就在 fire 内部做，或依赖 uid0。
 - **拿不到 adb root**：这是 user 版 adbd，重启后仍是 uid 2000。root 只走 25555 守护。
+- **permissive 那一孔写的是我们自己那页的页基址，不是 0**（`GHOSTLOCK_SELINUX_V`
+  可覆盖，写 0 回到旧行为）。`selinux_state` 的第 0 个字在本机构成是 4 个 bool：
+  byte0=`enforcing`、byte1=`checkreqprot`、byte2=`initialized`、byte3=`policycap[0]`。
+  写 0 会**连 `initialized` 一起清掉**，于是 SID->context 翻译失效
+  （`unknown SID` / init 报 `getpeercon() failed`），USB 重新枚举时 functionfs 无法
+  完成初始化、adbd 被拆，其退出路径又走了我们留下的 PI 状态 → **表现为"用一会儿先变卡、
+  然后死机"**。写 4096 对齐的页基址则 byte0=0（拿到 permissive）而 byte2≠0
+  （保住 initialized），附带的那次写也落在我们自己的页上。
 - 不落地：不写 /boot、不写 /system、不动 bootloader，重启即回到 Enforcing/uid2000。
 
 ---
