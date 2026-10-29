@@ -58,7 +58,7 @@ for i in $(seq 1 20); do
     # rejected by init no matter how healthy SELinux is.) A session that fails is
     # rebooted through sysrq, because `adb reboot` is itself a property set.
     $ADB forward tcp:25555 tcp:25555 >/dev/null 2>&1
-    if ! (cd "$ROOT" && python rootcmd.py 25 "echo CTX=[\$(id -Z)]" 2>/dev/null | tr -d '\r' | grep -q 'CTX=\[u:r:'); then
+    if ! (cd "$ROOT" && python rootcmd.py 25 "echo VERDICT=\$(getenforce)|\$(id -Z)" 2>/dev/null | tr -d '\r' | grep -q 'VERDICT=Permissive|u:r:'); then
       unsafe=1
       echo "[rootrun] UNSAFE root: SID->context is dead (id -Z shows ?), so touching"
       echo "          the screen will go laggy and then panic. Rebooting for another try"

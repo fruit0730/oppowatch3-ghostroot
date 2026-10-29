@@ -124,13 +124,16 @@ rem every id output). A setprop probe is useless here -- an undefined property
 rem name is rejected by init no matter how healthy SELinux is. A session that
 rem fails is rebooted via sysrq (`adb reboot` is itself a property set) and the
 rem attempt is retried.
-"%PY%" rootcmd.py 25 "echo CTX=[$(id -Z)]" >"%GL%" 2>nul
-"%FIND%" "CTX=[u:r:" "%GL%" >nul && goto rooted
-echo [!] root landed but SID->context is dead (id -Z prints ?) - this session WILL
-echo     freeze once you use the touchscreen. Rebooting and firing again
-echo     (a safe fire needs the recycled stack page to land 64KB aligned).
-"%PY%" rootcmd.py 25 "sync; sync; echo b > /proc/sysrq-trigger" >nul 2>&1
-goto retry
+"%PY%" rootcmd.py 25 "echo VERDICT=\$(getenforce)\|\$(id -Z)" >"%GL%" 2>nul
+"%FIND%" "VERDICT=Permissive|u:r:" "%GL%" >nul && goto rooted
+echo [!] not a safe session (need Permissive AND a resolvable context) - this is
+echo     the fire whose stack page was not 64KB aligned, so it stayed Enforcing
+echo     and did NO damage to init. Rebooting normally and firing again.
+"%ADB%" reboot >nul 2>&1
+"%PY%" rootcmd.py 12 "sync; sync; echo b > /proc/sysrq-trigger" >nul 2>&1
+set /a TRY+=1
+if !TRY! gtr %RETRIES% goto giveup
+goto attempt
 
 :blocked
 echo [x] %LOCK% is held by an older fire that is still running. NEVER kill it:
@@ -192,20 +195,11 @@ goto waitup
 :pastminute
 echo [*] watch is past minute one, idling %SETTLE%s before firing
 ping -n %SETTLE% 127.0.0.1 >nul
-rem LOAD GATE, measured today: every fire that LANDED root went in at a 1-minute
-rem load average of 9 or less (7.0, 6.9, 8.7, 9.4), and every fire that failed
-rem went in at 10.3 or above (10.3, 10.7, 11.5, 12.0, 12.5, 12.8) -- at high load
-rem the very first punch walks a busy PI chain and panics the watch before the
-rem program has done anything at all. So wait for the box to quiet down.
-set /a L=0
-:waitload
-"%ADB%" shell "uptime" 2>nul | "%FS%" /R "load average: [0-8]\." >nul && goto loadok
-set /a L+=1
-if !L! geq 18 goto loadok
-echo     ...waiting for the 1-min load average to drop below 9
-ping -n 11 127.0.0.1 >nul
-goto waitload
-:loadok
+rem No load gate: it looked like one this morning (landings at load <= 9.4,
+rem failures at >= 10.3) and was refuted the next day -- root landed at 4.6 after
+rem four stalls at 6.9-7.9, and a clean boot at 6.9 hung on punch 6. Whether a
+rem fire survives is a per-punch dice roll on the PI walk, not a property of the
+rem moment it starts, so waiting for a quiet load average only burned time.
 "%ADB%" shell "uptime; getenforce" 2>nul
 exit /b 0
 
