@@ -211,6 +211,16 @@ goto waitup
 :pastminute
 echo [*] watch is past minute one, idling %SETTLE%s before firing
 ping -n %SETTLE% 127.0.0.1 >nul
+rem Did it survive the idle? It can vanish here (a stuck boot, the gadget never
+rem coming up, or it simply left the charger), and pushing into that produced the
+rem misleading "cannot push the exploit" -> "no root after 14 fresh boots" below.
+"%ADB%" shell "getprop sys.boot_completed" 2>nul | "%FIND%" "1" >nul
+if not errorlevel 1 goto settled
+echo [x] the watch disappeared during the idle - it is not answering adb any more.
+echo     Check it is seated on the charger, and hold the side key ~15s to
+echo     power-cycle it, then run: root.bat
+exit /b 1
+:settled
 rem No load gate: it looked like one this morning (landings at load <= 9.4,
 rem failures at >= 10.3) and was refuted the next day -- root landed at 4.6 after
 rem four stalls at 6.9-7.9, and a clean boot at 6.9 hung on punch 6. Whether a
@@ -244,7 +254,9 @@ if not errorlevel 1 (
 )
 set /a N+=1
 if !N! lss 999 goto pushtry
-echo [x] cannot push the exploit - try: root.bat --attach
+echo [x] push failed on every name tried - the watch is almost certainly gone from
+echo     USB (check: adb devices), not that the exploit is bad. Re-seat it on the
+echo     charger, power-cycle with the side key if it is unresponsive, then retry.
 exit /b 1
 
 :rooted
