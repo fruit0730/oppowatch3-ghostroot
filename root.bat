@@ -158,10 +158,13 @@ rem  it go quiet.  Returns 1 if the watch never comes back.
 rem --------------------------------------------------------------------------
 :freshboot
 echo [*] rebooting for a clean boot ...
-rem Rooted? then use the daemon: sysrq works because we are uid 0 on
-rem /proc/sysrq-trigger (--w--w---- root:system), where adb reboot does not.
+set /a R=0
+:reboottry
+rem Rooted or SID-damaged? then the daemon is the ONLY way down: init refuses
+rem every property set, so `adb reboot` is a silent no-op there. sysrq works
+rem because we are uid 0 on /proc/sysrq-trigger (--w--w---- root:system).
 %PY% rootcmd.py 12 "sync; sync; echo b > /proc/sysrq-trigger" >nul 2>&1
-ping -n 6 127.0.0.1 >nul
+ping -n 4 127.0.0.1 >nul
 "%ADB%" reboot >nul 2>&1
 set /a D=0
 :waitdown
@@ -169,8 +172,21 @@ ping -n 3 127.0.0.1 >nul
 "%ADB%" shell "get-state" 2>nul | "%FIND%" "device" >nul
 if errorlevel 1 goto down
 set /a D+=1
-if !D! lss 12 goto waitdown
-echo [*] the watch never went down - it may already be rebooting, waiting anyway
+if !D! lss 15 goto waitdown
+rem It is STILL up after ~45 s, so neither sysrq nor adb reboot reached it.
+rem Firing on a boot that was already fired is what wedges the watch, and the
+rem old code did exactly that (attempt 1 of 12:20 wasted itself on a live old
+rem fire holding ghostlock.lock), so stop and say what is needed.
+set /a R+=1
+if !R! lss 3 (
+  echo     ...watch is still up, retrying the reboot ^(attempt !R! of 2^)
+  goto reboottry
+)
+echo [x] cannot reboot it remotely: this session broke init's property service
+echo     ^(so adb reboot is refused^) and the root daemon is gone. HOLD THE SIDE
+echo     KEY about 15 seconds to power-cycle, wait for Android, then run root.bat
+echo     again -- firing on an already-fired boot is what wedges the watch.
+exit /b 1
 :down
 "%ADB%" wait-for-device >nul 2>&1
 set /a T=0
