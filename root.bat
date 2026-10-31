@@ -1,4 +1,9 @@
 @echo off
+rem KEEP THIS FILE'S LINE ENDINGS AS CRLF. See .gitattributes (`*.bat -text`):
+rem cmd.exe's `goto :label` scan loses labels in a batch file that uses bare-LF
+rem lines, and the run then dies mid-way with "The system cannot find the batch
+rem label specified". Editor or git settings that "helpfully" normalize .bat to LF
+rem break the double-click path (cmd /c closes the window on that error).
 rem ===========================================================================
 rem  root.bat - one-shot automatic root for the OPPO Watch 3 (OWW212)
 rem
