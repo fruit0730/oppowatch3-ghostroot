@@ -112,25 +112,40 @@ echo [*] no verdict after !W! polls - the walk stalled (a panic usually follows)
 goto retry
 
 :checksafe
-rem Landing root is not enough: if the permissive punch had to write 0 (our
-rem recycled stack page was not 64KB aligned) it also cleared
-rem selinux_state.initialized, SID->context dies, init can no longer set ANY
-rem property, and the next USB re-enumeration tears adbd down on top of the PI
-rem state we left behind -- which is the "goes laggy, then dead" the user sees
-rem while touching the screen. `id -Z` is the functional test for exactly that:
-rem resolving a context calls security_sid_to_context(), so a broken one prints
-rem `?` instead of `u:r:...` (the same damage that shows up as `context=?` in
-rem every id output). A setprop probe is useless here -- an undefined property
-rem name is rejected by init no matter how healthy SELinux is. A session that
-rem fails is rebooted via sysrq (`adb reboot` is itself a property set) and the
-rem attempt is retried.
-"%PY%" rootcmd.py 25 "echo VERDICT=\$(getenforce)\|\$(id -Z)" >"%GL%" 2>nul
-"%FIND%" "VERDICT=Permissive|u:r:" "%GL%" >nul && goto rooted
-echo [!] not a safe session (need Permissive AND a resolvable context) - this is
-echo     the fire whose stack page was not 64KB aligned, so it stayed Enforcing
-echo     and did NO damage to init. Rebooting normally and firing again.
+rem THE VERDICT COMES FROM THE FIRE'S OWN LOG, NOT FROM A SOCKET PROBE.
+rem The old version asked rootcmd.py for `getenforce` and `id -Z`. rootcmd.py
+rem decides it is finished by looking for a completion marker in the stream, and
+rem this daemon's tty banner ("sh: can't find tty fd", the job-control warning)
+rem breaks that handshake -- so a genuinely SAFE session was answered as unsafe,
+rem the script rebooted a working root and kept firing until RETRIES ran out.
+rem That is the "it never stops after success" behaviour, and it happened tonight
+rem to a fire whose log had ALL of: "UW permissive store", "UW-CHECK final
+rem pass=0 uid=0 euid=0 gid=0 egid=0" and "UW-SHELL listening".
+rem The fire already reports exactly what this gate needs, in this order:
+rem   "UW permissive store"  -> selinux_state was written a 64KB-aligned value, so
+rem                              byte1 (enforcing) is 0 while byte3 (initialized)
+rem                              SURVIVES -> SID->context keeps working -> the
+rem                              watch does not go "laggy, then dead".
+rem   "UW-SELINUX SKIPPED"   -> no safe value this boot: uid 0 but still Enforcing,
+rem                              which is useless (no permissive) yet harmless
+rem                              (nothing broke in init), so another boot is tried.
+rem   "UW-SHELL listening"   -> the fire verified uid==0/euid==0 itself.
+set SAFE=0
+"%FIND%" "UW-SELINUX SKIPPED" "%GL%" >nul && goto unsafe
+"%FIND%" "UW permissive store" "%GL%" >nul && set SAFE=1
+if not "!SAFE!"=="1" (
+  echo [!] this fire's log shows neither a permissive store nor a skip - not
+  echo     taking a chance on it, rebooting and firing again. If this repeats,
+  echo     read the log: adb shell "cat \`ls -t %DT%/log_*.txt ^| head -1\`"
+  goto unsafe
+)
+goto rooted
+
+:unsafe
+echo [!] not a safe session: no "UW permissive store" in this fire's log, so the
+echo     box is rooted but still Enforcing (our recycled stack page was not 64KB
+echo     aligned). It did NO damage to init, so an ordinary `adb reboot` works.
 "%ADB%" reboot >nul 2>&1
-"%PY%" rootcmd.py 12 "sync; sync; echo b > /proc/sysrq-trigger" >nul 2>&1
 set /a TRY+=1
 if !TRY! gtr %RETRIES% goto giveup
 goto attempt
@@ -169,7 +184,12 @@ ping -n 4 127.0.0.1 >nul
 set /a D=0
 :waitdown
 ping -n 3 127.0.0.1 >nul
-"%ADB%" shell "get-state" 2>nul | "%FIND%" "device" >nul
+rem `get-state` is a HOST-side adb verb; as `adb shell get-state` it asked the
+rem watch for a binary that does not exist, the pipeline always failed, and this
+rem loop therefore jumped to :down on the first poll no matter whether the watch
+rem was up -- the "verify it really went down" check was silently a no-op, which
+rem is how a fire ended up on an already-fired boot.
+"%ADB%" get-state 2>nul | "%FIND%" "device" >nul
 if errorlevel 1 goto down
 set /a D+=1
 if !D! lss 15 goto waitdown
@@ -264,14 +284,26 @@ rem --attach used to claim ROOT unconditionally, which lied on a watch that had
 rem since rebooted: the daemon was gone and the shell just hung on a blank line.
 "%ADB%" forward tcp:%PORT% tcp:%PORT% >nul 2>&1
 set LIVE=0
-"%PY%" rootcmd.py 12 "echo GHOSTLOCK_ROOT_HERE" 2>nul | "%FIND%" "GHOSTLOCK_ROOT_HERE" >nul && set LIVE=1
+rem LIVENESS IS A PLAIN TCP CONNECT, NOT rootcmd.py. Same reason as :checksafe:
+rem rootcmd.py waits for a completion marker that this daemon's tty banner
+rem disrupts, so a LIVE daemon answered "nothing is listening" -- and this label
+rem then rebooted a perfectly good rooted watch and started firing again. That was
+rem the second path to "it never stops after success".
+%PY% -c "import socket;socket.create_connection(('127.0.0.1',%PORT%),timeout=6).close()" >nul 2>nul && set LIVE=1
 if not "!LIVE!"=="1" (
   echo [*] nothing is listening on %PORT% - this boot was never rooted ^(the watch
   echo     reboots itself when a rooted box loses the cable or adbd^), so firing
   echo     a fresh attempt instead of hanging on a dead shell.
   goto attempt
 )
-echo [ok] ROOT - SELinux is Permissive and a root shell listens on port %PORT%
+if "!SAFE!"=="1" (
+  echo [ok] ROOT - the fire stored a permissive value that keeps
+  echo      selinux_state.initialized, so SID-^>context still resolves and a root
+  echo      shell listens on port %PORT%.
+) else (
+  echo [ok] a root shell listens on port %PORT% ^(attach: no fire log to judge, so
+  echo      check it yourself: python rootcmd.py 20 "id; getenforce; id -Z"^).
+)
 echo [ok] any time later, without re-firing:  %PY% rootsh.py "id"
 echo.
 echo %ARGS%|"%FIND%" "--cmd" >nul && goto runcmds
