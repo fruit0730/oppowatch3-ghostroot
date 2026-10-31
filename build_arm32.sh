@@ -20,6 +20,21 @@ if [ ! -e assets/wallpaper.webp ]; then
   printf 'GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x024\x01\x00;' > assets/wallpaper.webp
 fi
 
+# src/su_blob.S .incbin's build/embed/su_daemon_arm32. That blob IS in the repo
+# (it is the exact one the shipped preload.so embeds, so a clean clone rebuilds
+# byte-for-byte), but if it is ever deleted the build must not die with
+# "Could not find incbin file" -- compile it from tools/build_su/su_daemon.c.
+# The fallback is a DYNAMICALLY linked ~12 KB su, while the committed blob is a
+# 261 KB statically linked one, so the resulting preload.so will differ from the
+# shipped artifact: fine to build, not fine to publish as "the" binary.
+if [ ! -s build/embed/su_daemon_arm32 ]; then
+  echo "[build] build/embed/su_daemon_arm32 missing -> compiling it from"
+  echo "         tools/build_su/su_daemon.c (dynamic, NOT the shipped blob)"
+  mkdir -p build/embed
+  "$CC" --target=armv7a-linux-androideabi30 "--sysroot=$SYSROOT_WIN" -O2 \
+    -o build/embed/su_daemon_arm32 tools/build_su/su_daemon.c
+fi
+
 "$CC" \
   --target=armv7a-linux-androideabi30 \
   "--sysroot=$SYSROOT_WIN" \

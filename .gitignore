@@ -14,7 +14,14 @@ device_config.gz
 device_config.txt
 
 # --- build output (keep the shipped exploit/preload.so, drop the objects) ---
-exploit/build/
+# ONE file inside it is a build INPUT, not output: src/su_blob.S .incbin's
+# build/embed/su_daemon_arm32, and without that exact blob a fresh clone cannot
+# rebuild preload.so at all ("Could not find incbin file"). Keep the directory
+# ignored and that file tracked.
+exploit/build/*
+!exploit/build/embed/
+exploit/build/embed/*
+!exploit/build/embed/su_daemon_arm32
 *.o
 *.d
 
@@ -31,6 +38,11 @@ __pycache__/
 .sonum
 *.bak
 *.tmp
+# root.bat keeps the last fire log next to itself so a closed console still
+# leaves evidence; that file is device data and must not be committed.
+rootbat-last-firelog.txt
+rootbat.log
+rootbat2.log
 .DS_Store
 linux-5.4-src/
 ota_capture.flow
