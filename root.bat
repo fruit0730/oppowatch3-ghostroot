@@ -45,13 +45,33 @@ set PY=python
 set RETRIES=14
 set SETTLE=100
 set GL=%TEMP%\ghostlock-last-log.txt
+set RUNLOG=%DIR%rootbat-last-firelog.txt
 set FIND=%SystemRoot%\System32\find.exe
 set FS=%SystemRoot%\System32\findstr.exe
 set ARGS=%*
 set /a TRY=1
+set /a RC=0
 
-if not exist "%ADB%" ( echo [x] adb not found: %ADB% & exit /b 1 )
-if not exist "%SO%"   ( echo [x] exploit not found: %SO% & exit /b 1 )
+rem THE WINDOW MUST NEVER CLOSE BEFORE YOU CAN READ IT. Every earlier version of
+rem this script had bare `exit /b` paths (adb missing, exploit missing, no device
+rem attached), and double-clicking root.bat then looked like a crash: one line,
+rem gone. Every terminal path now goes through :bye, which prints where the
+rem evidence was saved and waits for a keypress. Set GLCI=1 in the environment if
+rem you are driving this from another script and do not want the pause.
+echo [*] root.bat - OPPO Watch 3 (OWW212) GhostLock one-boot root
+
+if not exist "%ADB%" (
+  echo [x] adb.exe not found. Either put the platform-tools at C:\platform-tools
+  echo     or make sure adb.exe is on PATH -- the 0-byte `adb` that Git for
+  echo     Windows puts in PATH is deliberately ignored, it is not adb.
+  goto bye
+)
+if not exist "%SO%" (
+  echo [x] exploit artifact not found: %SO%
+  echo     This script must sit next to the repo clone ^(it looks for
+  echo     exploit\preload.so in its own folder^). Run it as:  root.bat
+  goto bye
+)
 cd /d "%DIR%"
 
 echo %ARGS%|"%FIND%" "--check" >nul && (
@@ -62,14 +82,18 @@ echo %ARGS%|"%FIND%" "--check" >nul && (
   echo [*] exploit artifact:
   dir "%SO%" | "%FIND%" "preload.so"
   echo [*] everything above looks usable - now run:  root.bat
-  exit /b 0
+  goto bye
 )
 
 echo [*] waiting for the device ...
-"%ADB%" wait-for-device || ( echo [x] no device & exit /b 1 )
+"%ADB%" wait-for-device
+if errorlevel 1 (
+  echo [x] no device on adb. Check the cable/charger, then:  adb devices
+  goto bye
+)
 
 rem --attach must not reboot anything: a fire is already live and rooted.
-echo %ARGS%|"%FIND%" "--attach" >nul && goto rooted
+echo %ARGS%|"%FIND%" "--attach" >nul && (set ATTACH=1& goto rooted)
 
 :attempt
 echo.
@@ -94,12 +118,28 @@ rem down the fire's process group is what panics the watch).
 "%ADB%" shell "nohup sh -c 'GFSO=%DT%/!GSN! GHOSTLOCK_WS_TARGET=st GHOSTLOCK_STAT_UWALK=1 GHOSTLOCK_ATTEMPTS=44 GHOSTLOCK_WBASE=4 GHOSTLOCK_WALKSAFE=1 GHOSTLOCK_STAY=1 sh %DT%/fire3.sh' </dev/null >/dev/null 2>&1 &" >nul 2>&1
 
 set /a W=0
+set /a EMPTY=0
 :waitroot
 ping -n 4 127.0.0.1 >nul
 set /a W+=1
 rem One adb call per poll (two is slower and each `adb shell` spawns a toybox
 rem that competes with the hunt for the tail of the task list).
 "%ADB%" shell "cat `ls -t %DT%/log_*.txt 2>/dev/null | head -1` 2>/dev/null" >"%GL%" 2>nul
+rem STOP WAITING BLIND WHEN THE BOX IS WEDGED. A stalled walk hangs the kernel with
+rem IRQs off, so adbd answers NOTHING more -- measured at 12:59 tonight: the fire
+rem had already written 22 KB (align roll HIT + permissive store) and then the box
+rem went silent, while this loop kept polling an empty copy for its full 70
+rem rounds, about three and a half minutes of dead time per stall. Ten empty polls
+rem in a row (~40 s; a healthy fire writes its first log line within ~10 s) means
+rem the box is not coming back on its own, so reboot and try again now.
+set SZ=0
+for %%F in ("%GL%") do set SZ=%%~zF
+if "!SZ!"=="0" ( set /a EMPTY+=1 ) else ( set /a EMPTY=0 )
+if !EMPTY! geq 10 (
+  echo [!] the watch stopped answering adb entirely for !EMPTY! polls - that walk
+  echo     wedged it ^(a watchdog reboot follows^). Not waiting out the full 70.
+  goto retry
+)
 "%FIND%" "UW-SHELL listening" "%GL%" >nul && goto checksafe
 "%FIND%" "SKIP single-flight" "%GL%" >nul && goto blocked
 rem the fire prints root=NO when it runs out of attempts without rooting
@@ -162,6 +202,7 @@ if !TRY! gtr %RETRIES% goto giveup
 goto attempt
 
 :giveup
+set /a RC=1
 echo [x] no root after %RETRIES% fresh boots. Hold the side key ~15s to
 echo     power-cycle, wait for Android, then run: root.bat
 echo     Then read the fire log: adb shell "cat /data/local/tmp/log_*.txt"^| more
@@ -175,11 +216,11 @@ rem --------------------------------------------------------------------------
 echo [*] rebooting for a clean boot ...
 set /a R=0
 :reboottry
-rem Rooted or SID-damaged? then the daemon is the ONLY way down: init refuses
-rem every property set, so `adb reboot` is a silent no-op there. sysrq works
-rem because we are uid 0 on /proc/sysrq-trigger (--w--w---- root:system).
-%PY% rootcmd.py 12 "sync; sync; echo b > /proc/sysrq-trigger" >nul 2>&1
-ping -n 4 127.0.0.1 >nul
+rem FAST PATH FIRST. The old order asked the root daemon for a sysrq reboot
+rem before trying adb, and that call can never complete in a session whose SID
+rem map is intact (rootcmd.py's marker handshake vs the daemon's tty banner), so
+rem every single attempt burned its 12 s timeout here for nothing and only then
+rem did the thing that actually works.
 "%ADB%" reboot >nul 2>&1
 set /a D=0
 :waitdown
@@ -192,8 +233,21 @@ rem is how a fire ended up on an already-fired boot.
 "%ADB%" get-state 2>nul | "%FIND%" "device" >nul
 if errorlevel 1 goto down
 set /a D+=1
-if !D! lss 15 goto waitdown
-rem It is STILL up after ~45 s, so neither sysrq nor adb reboot reached it.
+if !D! lss 8 goto waitdown
+rem `adb reboot` did NOT take it down. That is the one case the daemon is good
+rem for: a session that zeroed selinux_state.initialized makes init refuse every
+rem property set (sys.powerctl included), and sysrq still works because we are
+rem uid 0 on /proc/sysrq-trigger (--w--w---- root:system).
+echo     ...still up after adb reboot - asking sysrq through the root daemon
+"%PY%" rootcmd.py 12 "sync; sync; echo b > /proc/sysrq-trigger" >nul 2>&1
+set /a D=0
+:waitdown2
+ping -n 3 127.0.0.1 >nul
+"%ADB%" get-state 2>nul | "%FIND%" "device" >nul
+if errorlevel 1 goto down
+set /a D+=1
+if !D! lss 8 goto waitdown2
+rem It is STILL up after both paths, so neither sysrq nor adb reboot reached it.
 rem Firing on a boot that was already fired is what wedges the watch, and the
 rem old code did exactly that (attempt 1 of 12:20 wasted itself on a live old
 rem fire holding ghostlock.lock), so stop and say what is needed.
@@ -291,6 +345,13 @@ rem then rebooted a perfectly good rooted watch and started firing again. That w
 rem the second path to "it never stops after success".
 %PY% -c "import socket;socket.create_connection(('127.0.0.1',%PORT%),timeout=6).close()" >nul 2>nul && set LIVE=1
 if not "!LIVE!"=="1" (
+  if defined ATTACH (
+    echo [x] --attach: nothing is listening on %PORT%, so this boot is not rooted
+    echo     ^(or the watch rebooted since the fire^). As asked, NOTHING was rebooted
+    echo     or fired here. To root it:  root.bat
+    set /a RC=1
+    goto bye
+  )
   echo [*] nothing is listening on %PORT% - this boot was never rooted ^(the watch
   echo     reboots itself when a rooted box loses the cable or adbd^), so firing
   echo     a fresh attempt instead of hanging on a dead shell.
@@ -298,30 +359,56 @@ if not "!LIVE!"=="1" (
 )
 if "!SAFE!"=="1" (
   echo [ok] ROOT - the fire stored a permissive value that keeps
-  echo      selinux_state.initialized, so SID-^>context still resolves and a root
-  echo      shell listens on port %PORT%.
+  echo      selinux_state.initialized, so SID-^>context still resolves.
 ) else (
-  echo [ok] a root shell listens on port %PORT% ^(attach: no fire log to judge, so
-  echo      check it yourself: python rootcmd.py 20 "id; getenforce; id -Z"^).
+  echo [ok] ROOT - a root shell listens on port %PORT% ^(attached without a fire
+  echo      log to judge^). Prove it inside the shell:  id; getenforce; id -Z
 )
-echo [ok] any time later, without re-firing:  %PY% rootsh.py "id"
+echo [ok] opening the root shell now - type exit to leave it, the watch stays
+echo      rooted until it reboots.
+echo [ok] any time later, without re-firing:  root.bat --attach
 echo.
 echo %ARGS%|"%FIND%" "--cmd" >nul && goto runcmds
-rem The shell gets its OWN console window. In this window the fire's `adb shell`
-rem client is still alive (it is what keeps the exploit process group up), and
-rem two processes reading the same console keyboard means your typed command can
-rem be swallowed by adb.exe instead of reaching the shell -- which is exactly how
-rem "I typed id and nothing happened" looked.
+rem The shell runs in THIS window. In this window the fire's `adb shell` client is
+rem still alive (it is what keeps the exploit process group up), and two processes
+rem reading the same console keyboard means your typed command can be swallowed by
+rem adb.exe instead of reaching the shell -- which is exactly how "I typed id and
+rem nothing happened" looked.
 echo --- root shell in THIS window (exit leaves the watch rooted until reboot) --
 rem Safe to run inline now that no `start /b` adb client shares this keyboard.
 %PY% rootsh.py
+rem Did root survive the shell? Say so, instead of leaving the user to guess.
+set AFTER=0
+%PY% -c "import socket;socket.create_connection(('127.0.0.1',%PORT%),timeout=4).close()" >nul 2>nul && set AFTER=1
+if "!AFTER!"=="1" (
+  echo [ok] shell closed - the watch is STILL rooted, open it again:  root.bat --attach
+) else (
+  echo [.] shell closed and the daemon is gone: that boot is over ^(the watch
+  echo     rebooted^). Root it again with:  root.bat
+)
 goto end
 :runcmds
 %PY% rootsh.py %ARGS:--cmd=%
+goto end
 :end
 echo.
 echo [*] done. While rooted: do NOT unplug the charger, do NOT kill or restart
 echo     adbd - either one walks the leftover futex/PI state and reboots the box.
 echo     Finish with: adb reboot   (or, if rooted: python rootcmd.py 25
 echo     "sync; sync; echo b > /proc/sysrq-trigger")
-endlocal
+goto bye
+
+rem --------------------------------------------------------------------------
+rem  :bye - the ONLY way this script leaves. A double-clicked .bat closes its
+rem  console the moment the batch ends, which is why every bare `exit /b` above
+rem  looked like "root.bat flashes and vanishes": one line, gone, nothing to read.
+rem  So: keep a copy of the last fire log next to the script, say where it is, and
+rem  wait for a keypress. Set GLCI=1 in the environment to skip the pause when
+rem  another script is driving this one.
+rem --------------------------------------------------------------------------
+:bye
+if exist "%GL%" copy /y "%GL%" "%RUNLOG%" >nul 2>nul
+echo.
+echo [*] last fire log kept at: %RUNLOG%
+if not defined GLCI pause
+endlocal & exit /b %RC%
